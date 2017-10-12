@@ -23,7 +23,7 @@ import Clash.Signal (Signal)
 import Data.Int (Int32,Int64)
 import Data.Maybe
 
-data Mode = DELAY -- Take some time to display some code to the user
+data Mode = DELAY -- Give memory controller some time to start up (3 cycles)
           | ERROR -- Mode to communicate we've encountered an error
           | WRITE -- Write random number to current memory address
           | READ  -- Read random number from current memory address
@@ -93,30 +93,29 @@ tester :: State
 -- Pause if memory controller is not ready
 tester s@(_, addr, _, _) (_, _, _, True)  = (s, nothing addr)
 
--- Wait for 16 clockticks to update random number, then move on to write
-tester (DELAY, addr, cntr, random) (bit, readdata, readdatavalid, waitrequest) = (s, o)
+-- Give memory controller some time to start (3 cycles)
+tester (DELAY, addr, cntr, random) (bit, readdata, readdatavalid, waitrequest) = (s, nothing addr)
   where
-   o = (progressBar addr, 0, 0, 1, 1) -- Display current address on LEDs
-   s = (if cntr >= 16 then WRITE else DELAY, addr, succ cntr, shiftIn random bit)
+   s = (if cntr >= 2 then WRITE else DELAY, addr, succ cntr, shiftIn random bit)
 
 -- Write value and immediately move onto READ
 tester (WRITE, addr, cntr, random) _  = ( (READ, addr, cntr, random)
-                                        , (0, pack addr, random, 1, 0)
+                                        , (progressBar addr, pack addr, random, 1, 0)
                                         )
 
 -- Read value (wait until memory controller is ready)
 tester (READ, addr, cntr, random) _ = ( (WAIT, addr, cntr, random)
-                                      , (0, pack addr, 0, 0, 1)
+                                      , (progressBar addr, pack addr, 0, 0, 1)
                                       )
 
 -- Wait for value to arrive
-tester s@(WAIT, addr, cntr, random) (_, readdata, False, _) = (s, nothing addr)
-tester s@(WAIT, addr, cntr, random) (_, readdata, True,  _) = ( (next, succ addr, 0, random)
-                                                              , nothing addr
-                                                              )
-                                                                where
-                                                                  next | readdata == random = DELAY
-                                                                       | otherwise          = ERROR
+tester s@(WAIT, addr, cntr, random) (bit, readdata, False, _) = (s, nothing addr)
+tester s@(WAIT, addr, cntr, random) (bit, readdata, True,  _) = ( (next, succ addr, 0, shiftIn random bit)
+                                                                , nothing addr
+                                                                )
+                                                                  where
+                                                                    next | readdata == random = WRITE
+                                                                         | otherwise          = ERROR
 
 -- Error: flash LEDs like crazy
 tester (ERROR, addr, cntr, random) _ = ((ERROR, addr, cntr', random'), (resize random, 0, 0, 1, 1))
