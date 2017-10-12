@@ -75,7 +75,7 @@ lfsrF clk rst seed = msb <$> r
 shiftIn :: KnownNat n => BitVector n -> Bit -> BitVector n
 shiftIn vec bit = (if bit == 0 then clearBit else setBit) (shiftR vec 1) 0
 
-nothing = (0, 0, 0, 0, 0, 1, 1)
+nothing addr = (progressBar addr, 0, 0, 1, 1)
 
 tester :: State
        -> ( Bit            -- Random bit from LSFR
@@ -86,42 +86,40 @@ tester :: State
        -> (State, (
             BitVector 10 -- LEDS
           , BitVector 25 -- addr
-          , BitVector 2  -- byteenable_n
-          , BitVector 1  -- chipselect
           , BitVector 16 -- writedata
           , Bit          -- read_n
           , Bit          -- write_n
        ))
 -- Pause if memory controller is not ready
-tester s (_, _, _, True)  = (s, nothing)
+tester s@(_, addr, _, _) (_, _, _, True)  = (s, nothing addr)
 
 -- Wait for 16 clockticks to update random number, then move on to write
 tester (DELAY, addr, cntr, random) (bit, readdata, readdatavalid, waitrequest) = (s, o)
   where
-   o = (progressBar addr, 0, 0, 0, 0, 1, 1) -- Display current address on LEDs
+   o = (progressBar addr, 0, 0, 1, 1) -- Display current address on LEDs
    s = (if cntr >= 16 then WRITE else DELAY, addr, succ cntr, shiftIn random bit)
 
 -- Write value and immediately move onto READ
 tester (WRITE, addr, cntr, random) _  = ( (READ, addr, cntr, random)
-                                        , (0, pack addr, minBound, 1, random, 1, 0)
+                                        , (0, pack addr, random, 1, 0)
                                         )
 
 -- Read value (wait until memory controller is ready)
 tester (READ, addr, cntr, random) _ = ( (WAIT, addr, cntr, random)
-                                      , (0, pack addr, minBound, 1, 0, 0, 1)
+                                      , (0, pack addr, 0, 0, 1)
                                       )
 
 -- Wait for value to arrive
-tester s@(WAIT, addr, cntr, random) (_, readdata, False, _) = (s, nothing)
+tester s@(WAIT, addr, cntr, random) (_, readdata, False, _) = (s, nothing addr)
 tester s@(WAIT, addr, cntr, random) (_, readdata, True,  _) = ( (next, succ addr, 0, random)
-                                                              , nothing
+                                                              , nothing addr
                                                               )
                                                                 where
                                                                   next | readdata == random = DELAY
                                                                        | otherwise          = ERROR
 
 -- Error: flash LEDs like crazy
-tester (ERROR, _, cntr, random) _ = ((ERROR, 0, cntr', random'), nothing)
+tester (ERROR, addr, cntr, random) _ = ((ERROR, addr, cntr', random'), (resize random, 0, 0, 1, 1))
   where
     cntr' | cntr >= 50000000 = 0
           | otherwise        = succ cntr
@@ -169,9 +167,9 @@ g ::
      , Signal System Bit            -- read_n
      , Signal System Bit            -- write_n
      )
-g clk rst readdata datavalid waitrq = o
+g clk rst readdata datavalid waitrq = (leds, addr, 0, 1, writedata, read_n, write_n)
   where
     randomBits = lfsrF clk rst 0xAAAA
     i = (randomBits, readdata, tobool <$> datavalid, tobool <$> waitrq)
-    o = mealyB clk rst tester (DELAY, 0, 0, 0) i
+    (leds, addr, writedata, read_n, write_n) = mealyB clk rst tester (DELAY, 0, 0, 0) i
 
