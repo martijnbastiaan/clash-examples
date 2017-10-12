@@ -1,16 +1,27 @@
-module Lib where
+{-|
+Copyright   : (C) 2017, QBayLogic
+License     : BSD2 (see the file LICENSE)
+Module      : MemoryTester
+Description : SDRAM health tester, fitting blogpost "Using SDRAM on the DE10 using Clash"
+Author      : Martijn Bastiaan <martijn@qbaylogic.com>
+Maintainer  : Martijn Bastiaan <martijn@qbaylogic.com>
+Stability   : experimental
+Portability : POSIX
 
-import qualified Prelude
-import qualified Data.List
+Simple state machine which cycles between:
 
-import Control.Concurrent (threadDelay)
-import Clash.Intel.ClockGen
-import Clash.Explicit.Prelude hiding (empty)
+  - Showing intermediate results to user
+  - Writing random number to memory address
+  - Reading from same memory address and checking for consistency
+
+An error state is triggered whenever a consistency check fails.
+-}
+module MemoryTester where
+
+import Clash.Explicit.Prelude
 import Clash.Signal (Signal)
-import Data.Int (Int32)
+import Data.Int (Int32,Int64)
 import Data.Maybe
-import Debug.Trace
-import System.IO
 
 data Mode = DELAY -- Take some time to display some code to the user
           | ERROR -- Mode to communicate we've encountered an error
@@ -25,7 +36,28 @@ type State = (
              , BitVector 16 -- Random number (updated during DELAY)
              )
 
-waitFor = 50000000 `quot` 1
+-- We would like to display our memory test as a progress bar on the
+-- LEDs. This function converts a memory address to a number of lit
+-- LEDs.
+progressBar :: Index (2^25)
+            -- ^ Number
+            -> BitVector 10
+            -- ^ Progress expressed as LEDs
+progressBar n = shiftL (complement zeroBits) (10 - nLeds)
+  where
+    step = maxBound `quot` 11
+    nLeds | n < 1*step  = 0
+          | n < 2*step  = 1
+          | n < 3*step  = 2
+          | n < 4*step  = 3
+          | n < 5*step  = 4
+          | n < 6*step  = 5
+          | n < 7*step  = 6
+          | n < 8*step  = 7
+          | n < 9*step  = 8
+          | n < 10*step = 9
+          | otherwise   = 10
+
 
 lfsrF' :: BitVector 16 -> BitVector 16
 lfsrF' s = feedback ++# slice d15 d1 s
@@ -63,11 +95,11 @@ tester :: State
 -- Pause if memory controller is not ready
 tester s (_, _, _, True)  = (s, nothing)
 
--- Wait for user specified time, then move on to write (and update random value)
+-- Wait for 16 clockticks to update random number, then move on to write
 tester (DELAY, addr, cntr, random) (bit, readdata, readdatavalid, waitrequest) = (s, o)
   where
-   o = (fromIntegral addr, 0, 0, 0, 0, 1, 1) -- Display current address on LEDs
-   s = (if cntr >= waitFor then WRITE else DELAY, addr, succ cntr, shiftIn random bit)
+   o = (progressBar addr, 0, 0, 0, 0, 1, 1) -- Display current address on LEDs
+   s = (if cntr >= 16 then WRITE else DELAY, addr, succ cntr, shiftIn random bit)
 
 -- Write value and immediately move onto READ
 tester (WRITE, addr, cntr, random) _  = ( (READ, addr, cntr, random)
@@ -91,8 +123,8 @@ tester s@(WAIT, addr, cntr, random) (_, readdata, True,  _) = ( (next, succ addr
 -- Error: flash LEDs like crazy
 tester (ERROR, _, cntr, random) _ = ((ERROR, 0, cntr', random'), nothing)
   where
-    cntr' | cntr >= waitFor = 0
-          | otherwise       = succ cntr
+    cntr' | cntr >= 50000000 = 0
+          | otherwise        = succ cntr
 
     random' | cntr == 0 = complement random
             | otherwise = random
